@@ -11,7 +11,7 @@
 ;; the watchers in an atom.
 
 (def ls-watchers (atom {}))
-(def ls-map-watchers (atom {}))
+(def ls-kvmap-watchers (atom {}))
 
 ;; `localStorage` support
 ;; ----------------------
@@ -29,12 +29,26 @@
 ;;  * `(dissoc! local-storage :saved-results)` - remove an item
 ;;  * `(empty! local-storage)` - Clear out the localStorage store
 
-(defprotocol ITransientMapWatchable
-  (-notify-map-watches [this map-key oldval newval])
-  (-add-map-watch [this map-key fn-key f])
-  (-remove-map-watch [this map-key fn-key])
-  (-remove-key-map-watch [this map-key])
-  (-remove-all-map-watch [this]))
+
+(defprotocol IMutableKVMapWatchable
+  "A mutable kvmap is a key-value store that lends itself to
+  a map-like interface of one level deep.
+  This protocol defines a watchers/pubsub interface,
+  where watchers can be registered on the key as well as the whole store.
+  Mimics the IWatchable interface with the addition of a map-key to identify 
+  the key that should be watched."
+  (notify-kvmap-watches [this map-key oldval newval] 
+    "Notifies all registered watcher-fns of the changed value for map-key.")
+  (add-kvmap-watch [this map-key fn-key watcher-fn]
+    "Registers a watcher-fn for map-key value changes with a watch-fn id of fn-key.
+    When value changes, the following is called:
+    (watcher-fn fn-key this map-key oldval newval)")
+  (remove-kvmap-watch [this map-key fn-key]
+    "Remove the watcher-fn registered on map-key with id fn-key.")
+  (remove-key-kvmap-watch [this map-key]
+    "Removes all watcher-fns registered on map-key.")
+  (remove-all-kvmap-watch [this]
+    "Removes all watcher-fns registered on all map-keys"))
 
 
 (extend-type goog.storage.mechanism.HTML5LocalStorage
@@ -67,7 +81,7 @@
         ;; next is a hack to communicate the key to the notify-watches context
         ;; protocol doesn't really match well, but this way we can make it "work"
         (-notify-watches ls {:key k :value oldval} {:key k :value v})
-        (-notify-map-watches ls k oldval v)))
+        (notify-kvmap-watches ls k oldval v)))
     ls)
 
   ITransientMap
@@ -78,7 +92,7 @@
         ;; next is a hack to communicate the key to the notify-watches context
         ;; protocol doesn't really match well, but this way it "works"
         (-notify-watches ls {:key k :value oldval} {:key k :value nil})
-        (-notify-map-watches ls k oldval nil)))
+        (notify-kvmap-watches ls k oldval nil)))
     ls)
 
   ;; ITransientCollection
@@ -106,28 +120,28 @@
         (swap! ls-watchers dissoc map-key)
         (swap! ls-watchers assoc-in [map-key] new-fns-map))))
 
-  ITransientMapWatchable
-  (-notify-map-watches [ls map-key oldval newval]
-    (when-let [fns-map (get @ls-map-watchers map-key nil)]
+  IMutableKVMapWatchable
+  (notify-kvmap-watches [ls map-key oldval newval]
+    (when-let [fns-map (get @ls-kvmap-watchers map-key nil)]
       (doseq [k-f fns-map]
         ((val k-f) (key k-f) ls map-key oldval newval)))
     ls)
-  (-add-map-watch [ls map-key fn-key f]
+  (add-kvmap-watch [ls map-key fn-key f]
     (println "ls map-key fn-key f:" ls map-key fn-key f)
-    (swap! ls-map-watchers assoc-in [map-key fn-key] f)
+    (swap! ls-kvmap-watchers assoc-in [map-key fn-key] f)
     ls)
-  (-remove-map-watch [ls map-key fn-key]
-    (let [fns-map (get-in @ls-map-watchers [map-key])
+  (remove-kvmap-watch [ls map-key fn-key]
+    (let [fns-map (get-in @ls-kvmap-watchers [map-key])
           new-fns-map (dissoc fns-map fn-key)]
       (if (empty? new-fns-map)
-        (swap! ls-map-watchers dissoc map-key)
-        (swap! ls-map-watchers assoc-in [map-key] new-fns-map)))
+        (swap! ls-kvmap-watchers dissoc map-key)
+        (swap! ls-kvmap-watchers assoc-in [map-key] new-fns-map)))
     ls)
-  (-remove-key-map-watch [ls map-key]
-    (swap! ls-map-watchers dissoc map-key)
+  (remove-key-kvmap-watch [ls map-key]
+    (swap! ls-kvmap-watchers dissoc map-key)
     ls)
-  (-remove-all-map-watch [ls]
-    (reset! ls-map-watchers {})
+  (remove-all-kvmap-watch [ls]
+    (reset! ls-kvmap-watchers {})
     ls)
 
   ;IPrintable
