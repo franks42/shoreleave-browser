@@ -11,7 +11,6 @@
 ;; the watchers in an atom.
 
 (def ls-watchers (atom {}))
-(def ls-kvmap-watchers (atom {}))
 
 ;; `localStorage` support
 ;; ----------------------
@@ -30,6 +29,11 @@
 ;;  * `(empty! local-storage)` - Clear out the localStorage store
 
 
+;;Why do I need the following declares to shut up the compiler about undeclared warnings???
+(declare notify-kvmap-watches)
+(declare add-kvmap-watch)
+(declare remove-kvmap-watch)
+
 (defprotocol IMutableKVMapWatchable
   "A mutable kvmap is a key-value store that lends itself to
   a map-like interface of one level deep.
@@ -39,17 +43,125 @@
   the key that should be watched."
   (notify-kvmap-watches [this map-key oldval newval] 
     "Notifies all registered watcher-fns of the changed value for map-key.")
-  (add-kvmap-watch [this map-key fn-key watcher-fn]
+  (add-kvmap-watch [this fn-key watcher-fn][this map-key fn-key watcher-fn]
     "Registers a watcher-fn for map-key value changes with a watch-fn id of fn-key.
     When value changes, the following is called:
-    (watcher-fn fn-key this map-key oldval newval)")
-  (remove-kvmap-watch [this map-key fn-key]
-    "Remove the watcher-fn registered on map-key with id fn-key.")
-  (remove-key-kvmap-watch [this map-key]
-    "Removes all watcher-fns registered on map-key.")
-  (remove-all-kvmap-watch [this]
-    "Removes all watcher-fns registered on all map-keys"))
+    (watcher-fn fn-key this map-key oldval newval)
+    When this kvmap is passed without a map-key, or if the map-key equals this kvmap,
+    then the watcher-fn is registered on the kvmap itself, and will be notified 
+    for every change of every key-value.")
+  (remove-kvmap-watch [this][this map-key][this map-key fn-key]
+    "Remove all the watcher-fns registered on all the map-keys of this kvmap,
+    or remove all the watcher-fns registered on the map-key,
+    or remove the single watcher-fn registered on the map-key with id fn-key.
+    If map-key equals this kvmap then the watcher-fns registered on the kvmap itself are removed.")
+    )
 
+;; (declare notify-kvmap-watches)
+
+(deftype MutableKVMap [kvmap-atom kvmap-key-watchers-atom kvmap-watchers-atom])
+
+(defn make-mutable-kvmap [] (MutableKVMap. (atom {}) (atom {}) (atom {})))
+
+(extend-type MutableKVMap
+  
+  ILookup
+  (-lookup
+    ([kvm mapkey]
+      (-lookup kvm mapkey nil))
+    ([kvm mapkey not-found] 
+      (let [kvm-atm (.-kvmap-atom kvm)]
+        (get @kvm-atm mapkey not-found))))
+
+  ICounted
+  (-count [kvm] 
+    (count (deref (.-kvmap-atom kvm))))
+
+  IFn
+  (-invoke
+    ([kvm k]
+      (-lookup kvm k))
+    ([kvm k not-found]
+      (-lookup kvm k not-found))) 
+
+  ITransientAssociative
+  (-assoc! [kvm mapkey newvalue]
+    (let [kvm-atm (.-kvmap-atom kvm)
+          oldval (-lookup kvm mapkey)]
+      (when-not (= oldval newvalue)
+        (swap! kvm-atm assoc mapkey newvalue)
+        (notify-kvmap-watches kvm mapkey oldval newvalue)))
+    kvm)
+
+  ITransientMap
+  (-dissoc! [kvm mapkey]
+    (let [kvm-atm (.-kvmap-atom kvm)
+          oldval (-lookup kvm mapkey)]
+      (when-not (nil? oldval)
+        (swap! kvm-atm dissoc mapkey)
+        ;; next is a hack to communicate the key to the notify-watches context
+        ;; protocol doesn't really match well, but this way it "works"
+        (notify-kvmap-watches kvm mapkey oldval nil)))
+    kvm)
+
+  IMutableKVMapWatchable
+  (notify-kvmap-watches [kvm map-key oldval newval]
+    (let [kvm-watchers-atm (.-kvmap-watchers-atom kvm)]
+      (when-let [fns-map @kvm-watchers-atm]
+        (doseq [k-f fns-map]
+          ((val k-f) (key k-f) kvm map-key oldval newval))))
+    (let [kvm-key-watchers-atm (.-kvmap-key-watchers-atom kvm)]
+      (when-let [fns-map (get @kvm-key-watchers-atm map-key nil)]
+        (doseq [k-f fns-map]
+          ((val k-f) (key k-f) kvm map-key oldval newval))))
+    kvm)
+  (add-kvmap-watch 
+    ([kvm fn-key f]
+      (swap! (.-kvmap-watchers-atom kvm) assoc fn-key f)
+      kvm)
+    ([kvm map-key fn-key f]
+      (swap! (.-kvmap-key-watchers-atom kvm) assoc-in [map-key fn-key] f)
+      kvm))
+  (remove-kvmap-watch
+    ([kvm map-key fn-key]
+      (if (= kvm map-key)
+        (swap! (.-kvmap-watchers-atom kvm) dissoc fn-key)
+        (let [fns-map (get-in @(.-kvmap-key-watchers-atom kvm) [map-key])
+              new-fns-map (dissoc fns-map fn-key)]
+          (if (empty? new-fns-map)
+            (swap! (.-kvmap-key-watchers-atom kvm) dissoc map-key)
+            (swap! (.-kvmap-key-watchers-atom kvm) assoc-in [map-key] new-fns-map))))
+      kvm)
+    ([kvm map-key]
+      (if (= kvm map-key)
+        (reset! (.-kvmap-watchers-atom kvm) {})
+        (swap! (.-kvmap-key-watchers-atom kvm) dissoc map-key))
+      kvm)
+    ([kvm]
+      (reset! (.-kvmap-watchers-atom kvm) {})
+      (reset! (.-kvmap-key-watchers-atom kvm) {})
+      kvm))
+
+  ;; deref'ing the kvmap gives you an immutable map instance to work with.
+  ;; so does any get/lookup get you an immutable key-value
+  IDeref
+  (-deref [kvm] (deref (.-kvmap-atom kvm)))
+
+  ;IPrintable
+  ;(-pr-seq  [c opts]
+   ; #_(let  [pr-pair  (fn  [keyval]  (pr-sequential pr-seq "" " " "" opts keyval))]
+   ;   (pr-sequential pr-pair "{" ", " "}" opts c))
+   ; (-pr-seq (-persistent! c) opts))
+   
+ ;; ITransientCollection
+
+
+)
+
+;;;;;;;;;;;;;;;;;;;;;;
+
+(def ls-kvmap-watchers-atom (atom {}))
+(def ls-kvmap-key-watchers-atom (atom {}))
 
 (extend-type goog.storage.mechanism.HTML5LocalStorage
   
@@ -120,46 +232,70 @@
         (swap! ls-watchers dissoc map-key)
         (swap! ls-watchers assoc-in [map-key] new-fns-map))))
 
+  
   IMutableKVMapWatchable
+  
   (notify-kvmap-watches [ls map-key oldval newval]
-    (when-let [fns-map (get @ls-kvmap-watchers map-key nil)]
+    (when-let [fns-map @ls-kvmap-watchers-atom]
+      (doseq [k-f fns-map]
+        ((val k-f) (key k-f) ls map-key oldval newval)))
+    (when-let [fns-map (get @ls-kvmap-key-watchers-atom map-key nil)]
       (doseq [k-f fns-map]
         ((val k-f) (key k-f) ls map-key oldval newval)))
     ls)
-  (add-kvmap-watch [ls map-key fn-key f]
-    (println "ls map-key fn-key f:" ls map-key fn-key f)
-    (swap! ls-kvmap-watchers assoc-in [map-key fn-key] f)
-    ls)
-  (remove-kvmap-watch [ls map-key fn-key]
-    (let [fns-map (get-in @ls-kvmap-watchers [map-key])
-          new-fns-map (dissoc fns-map fn-key)]
-      (if (empty? new-fns-map)
-        (swap! ls-kvmap-watchers dissoc map-key)
-        (swap! ls-kvmap-watchers assoc-in [map-key] new-fns-map)))
-    ls)
-  (remove-key-kvmap-watch [ls map-key]
-    (swap! ls-kvmap-watchers dissoc map-key)
-    ls)
-  (remove-all-kvmap-watch [ls]
-    (reset! ls-kvmap-watchers {})
-    ls)
+  (add-kvmap-watch 
+    ([ls fn-key f]
+      (swap! ls-kvmap-watchers-atom assoc fn-key f)
+      ls)
+    ([ls map-key fn-key f]
+      (swap! ls-kvmap-key-watchers-atom assoc-in [map-key fn-key] f)
+      ls))
+  (remove-kvmap-watch
+    ([ls map-key fn-key]
+      (if (= ls map-key)
+        (swap! ls-kvmap-watchers-atom dissoc fn-key)
+        (let [fns-map (get-in @ls-kvmap-key-watchers-atom [map-key])
+              new-fns-map (dissoc fns-map fn-key)]
+          (if (empty? new-fns-map)
+            (swap! ls-kvmap-key-watchers-atom dissoc map-key)
+            (swap! ls-kvmap-key-watchers-atom assoc-in [map-key] new-fns-map))))
+      ls)
+    ([ls map-key]
+      (if (= ls map-key)
+        (reset! ls-kvmap-watchers-atom {})
+        (swap! ls-kvmap-key-watchers-atom dissoc map-key))
+      ls)
+    ([ls]
+      (reset! ls-kvmap-watchers-atom {})
+      (reset! ls-kvmap-key-watchers-atom {})
+      ls))
 
-  ;IPrintable
-  ;(-pr-seq  [c opts]
-   ; #_(let  [pr-pair  (fn  [keyval]  (pr-sequential pr-seq "" " " "" opts keyval))]
-   ;   (pr-sequential pr-pair "{" ", " "}" opts c))
-   ; (-pr-seq (-persistent! c) opts))
 )
 
 (defn empty!
   "Clear the localStorage"
   [ls]
-  (.clear ls))
+  (.clear ls)
+  ls)
 
-;; ###Usage
-;; You'll typically do something like: `(def local-storage (localstorage/storage)`
-(defn storage
+
+(def local-storage (goog.storage.mechanism.HTML5LocalStorage.))
+
+(defn get-local-storage
   "Get the browser's localStorage"
-  []
-  (goog.storage.mechanism.HTML5LocalStorage.))
+  [] local-storage)
 
+
+(defn local-storage-keys 
+  "Return the current list of keys of the local storage as a list of cljs-values.
+  Note that from the moment that list is generated, it may be out-of-date
+  as the local storage can be changed from other threads of work, 
+  even from other browser windows."
+  ([] (local-storage-keys (get-local-storage)))
+  ([ls]
+  (let [i (.__iterator__ ls true)] 
+    (loop [lsks []] 
+      (let [k (try (.next i) (catch js/Object e))]
+        (if-not k
+          lsks
+          (recur (conj lsks (cljs.reader/read-string k)))))))))
