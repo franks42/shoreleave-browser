@@ -192,7 +192,7 @@
         (.set ls (pr-str k) (pr-str v))
         ;; next is a hack to communicate the key to the notify-watches context
         ;; protocol doesn't really match well, but this way we can make it "work"
-        (-notify-watches ls {:key k :value oldval} {:key k :value v})
+;;         (-notify-watches ls {:key k :value oldval} {:key k :value v})
         (notify-kvmap-watches ls k oldval v)))
     ls)
 
@@ -203,7 +203,7 @@
         (.remove ls (pr-str k))
         ;; next is a hack to communicate the key to the notify-watches context
         ;; protocol doesn't really match well, but this way it "works"
-        (-notify-watches ls {:key k :value oldval} {:key k :value nil})
+;;         (-notify-watches ls {:key k :value oldval} {:key k :value nil})
         (notify-kvmap-watches ls k oldval nil)))
     ls)
 
@@ -299,3 +299,23 @@
         (if-not k
           lsks
           (recur (conj lsks (cljs.reader/read-string k)))))))))
+
+
+;; window.addEventListener("storage", handle_storage, false);
+;; function handle_storage(e) {
+;;   if (!e) { e = window.event; }
+;; }
+
+(js/window.addEventListener 
+  "storage" 
+  (fn [e] 
+    (let [storage-area (.-storageArea e)
+          local-storage? (= storage-area js/localStorage)]
+      (when local-storage?
+        (let [ls (get-local-storage)
+              map-key (cljs.reader/read-string (.-key e))
+              old-value (cljs.reader/read-string (.-oldValue e))
+              new-value (cljs.reader/read-string (.-newValue e))]
+      (println "LocalStorage Event(map-key, oldValue, newValue, storageArea, local-storage?):" map-key old-value new-value storage-area local-storage?)
+      (notify-kvmap-watches ls map-key old-value new-value)))))
+  false)
