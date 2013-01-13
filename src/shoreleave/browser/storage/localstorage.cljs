@@ -29,6 +29,9 @@
 ;;  * `(empty! local-storage)` - Clear out the localStorage store
 
 
+;; define a no-value variable to distinguish between nil and no-value/non-existent
+(def no-value :absolutely-non-existent-value)
+
 ;;Why do I need the following declares to shut up the compiler about undeclared warnings???
 (declare notify-kvmap-watches)
 (declare add-kvmap-watch)
@@ -57,7 +60,6 @@
     If map-key equals this kvmap then the watcher-fns registered on the kvmap itself are removed.")
     )
 
-;; (declare notify-kvmap-watches)
 
 (deftype MutableKVMap [kvmap-atom kvmap-key-watchers-atom kvmap-watchers-atom])
 
@@ -87,7 +89,7 @@
   ITransientAssociative
   (-assoc! [kvm mapkey newvalue]
     (let [kvm-atm (.-kvmap-atom kvm)
-          oldval (-lookup kvm mapkey)]
+          oldval (-lookup kvm mapkey no-value)]
       (when-not (= oldval newvalue)
         (swap! kvm-atm assoc mapkey newvalue)
         (notify-kvmap-watches kvm mapkey oldval newvalue)))
@@ -96,12 +98,12 @@
   ITransientMap
   (-dissoc! [kvm mapkey]
     (let [kvm-atm (.-kvmap-atom kvm)
-          oldval (-lookup kvm mapkey)]
-      (when-not (nil? oldval)
+          oldval (-lookup kvm mapkey no-value)]
+      (when-not (= oldval no-value)
         (swap! kvm-atm dissoc mapkey)
         ;; next is a hack to communicate the key to the notify-watches context
         ;; protocol doesn't really match well, but this way it "works"
-        (notify-kvmap-watches kvm mapkey oldval nil)))
+        (notify-kvmap-watches kvm mapkey oldval no-value)))
     kvm)
 
   IMutableKVMapWatchable
@@ -168,7 +170,7 @@
   ILookup
   (-lookup
     ([ls k]
-      (-lookup ls k nil))
+      (-lookup ls k no-value))
     ([ls k not-found]
       (if-let [v (.get ls (pr-str k))]
         (cljs.reader/read-string v)
@@ -187,24 +189,23 @@
 
   ITransientAssociative
   (-assoc! [ls k v]
-    (let [oldval (get ls k nil)]
+    (let [oldval (get ls k no-value)]
       (when-not (= oldval v)
         (.set ls (pr-str k) (pr-str v))
-        ;; next is a hack to communicate the key to the notify-watches context
-        ;; protocol doesn't really match well, but this way we can make it "work"
 ;;         (-notify-watches ls {:key k :value oldval} {:key k :value v})
-        (notify-kvmap-watches ls k oldval v)))
+        (notify-kvmap-watches ls k oldval v)
+        ))
     ls)
 
   ITransientMap
   (-dissoc! [ls k]
-    (let [oldval (get ls k nil)]
-      (when-not (nil? oldval)
+    (let [oldval (get ls k no-value)]
+      (when-not (= oldval no-value)
         (.remove ls (pr-str k))
         ;; next is a hack to communicate the key to the notify-watches context
         ;; protocol doesn't really match well, but this way it "works"
 ;;         (-notify-watches ls {:key k :value oldval} {:key k :value nil})
-        (notify-kvmap-watches ls k oldval nil)))
+        (notify-kvmap-watches ls k oldval no-value)))
     ls)
 
   ;; ITransientCollection
@@ -309,13 +310,22 @@
 (js/window.addEventListener 
   "storage" 
   (fn [e] 
+;;     (println "storage event")
     (let [storage-area (.-storageArea e)
           local-storage? (= storage-area js/localStorage)]
       (when local-storage?
         (let [ls (get-local-storage)
               map-key (cljs.reader/read-string (.-key e))
-              old-value (cljs.reader/read-string (.-oldValue e))
+              oldValue (.-oldValue e)
+              old-value (if oldValue (cljs.reader/read-string (.-oldValue e)) no-value)
               new-value (cljs.reader/read-string (.-newValue e))]
-      (println "LocalStorage Event(map-key, oldValue, newValue, storageArea, local-storage?):" map-key old-value new-value storage-area local-storage?)
+      (println "\"storage\" event(map-key, oldValue, newValue, storageArea, local-storage?):" map-key old-value new-value storage-area local-storage?)
       (notify-kvmap-watches ls map-key old-value new-value)))))
   false)
+
+(js/window.addEventListener 
+  "storage" 
+  (fn [e] 
+    (println "storage event"))
+  false)
+
