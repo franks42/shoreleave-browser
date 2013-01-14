@@ -30,34 +30,46 @@
 
 
 ;; define a no-value variable to distinguish between nil and no-value/non-existent
-(def no-value :absolutely-non-existent-value)
+;; (def no-value :absolutely-non-existent-value)
+(def no-value "uri:http://clojure.org/uri/no-value")
 
-;;Why do I need the following declares to shut up the compiler about undeclared warnings???
-(declare notify-kvmap-watches)
-(declare add-kvmap-watch)
-(declare remove-kvmap-watch)
+;; clj-js-string
+(def clj-edn-prefix "clj-edn:")
+
+(defn encode-edn-str [o]
+  (if (string? o)
+    o 
+    (str clj-edn-prefix (pr-str o))))
+
+(defn decode-edn-str [s]
+  (let [n (count clj-edn-prefix)]
+  (if (= (subs s 0 n) clj-edn-prefix)
+    (cljs.reader/read-string (subs s n))
+    s))
+
+;;
 
 (defprotocol IMutableKVMapWatchable
   "A mutable kvmap is a key-value store that lends itself to
   a map-like interface of one level deep.
   This protocol defines a watchers/pubsub interface,
   where watchers can be registered on the key as well as the whole store.
-  Mimics the IWatchable interface with the addition of a map-key to identify 
+  Mimics the IWatchable interface with the addition of a mapkey to identify 
   the key that should be watched."
-  (notify-kvmap-watches [this map-key oldval newval] 
-    "Notifies all registered watcher-fns of the changed value for map-key.")
-  (add-kvmap-watch [this fn-key watcher-fn][this map-key fn-key watcher-fn]
-    "Registers a watcher-fn for map-key value changes with a watch-fn id of fn-key.
+  (notify-kvmap-watches [this mapkey oldval newval] 
+    "Notifies all registered watcher-fns of the changed value for mapkey.")
+  (add-kvmap-watch [this fnkey watcher-fn][this mapkey fnkey watcher-fn]
+    "Registers a watcher-fn for mapkey value changes with a watch-fn id of fnkey.
     When value changes, the following is called:
-    (watcher-fn fn-key this map-key oldval newval)
-    When this kvmap is passed without a map-key, or if the map-key equals this kvmap,
+    (watcher-fn fnkey this mapkey oldval newval)
+    When this kvmap is passed without a mapkey, or if the mapkey equals this kvmap,
     then the watcher-fn is registered on the kvmap itself, and will be notified 
     for every change of every key-value.")
-  (remove-kvmap-watch [this][this map-key][this map-key fn-key]
-    "Remove all the watcher-fns registered on all the map-keys of this kvmap,
-    or remove all the watcher-fns registered on the map-key,
-    or remove the single watcher-fn registered on the map-key with id fn-key.
-    If map-key equals this kvmap then the watcher-fns registered on the kvmap itself are removed.")
+  (remove-kvmap-watch [this][this mapkey][this mapkey fnkey]
+    "Remove all the watcher-fns registered on all the mapkeys of this kvmap,
+    or remove all the watcher-fns registered on the mapkey,
+    or remove the single watcher-fn registered on the mapkey with id fnkey.
+    If mapkey equals this kvmap then the watcher-fns registered on the kvmap itself are removed.")
     )
 
 
@@ -87,12 +99,12 @@
       (-lookup kvm k not-found))) 
 
   ITransientAssociative
-  (-assoc! [kvm mapkey newvalue]
+  (-assoc! [kvm mapkey newval]
     (let [kvm-atm (.-kvmap-atom kvm)
           oldval (-lookup kvm mapkey no-value)]
-      (when-not (= oldval newvalue)
-        (swap! kvm-atm assoc mapkey newvalue)
-        (notify-kvmap-watches kvm mapkey oldval newvalue)))
+      (when-not (= oldval newval)
+        (swap! kvm-atm assoc mapkey newval)
+        (notify-kvmap-watches kvm mapkey oldval newval)))
     kvm)
 
   ITransientMap
@@ -107,37 +119,37 @@
     kvm)
 
   IMutableKVMapWatchable
-  (notify-kvmap-watches [kvm map-key oldval newval]
+  (notify-kvmap-watches [kvm mapkey oldval newval]
     (let [kvm-watchers-atm (.-kvmap-watchers-atom kvm)]
       (when-let [fns-map @kvm-watchers-atm]
         (doseq [k-f fns-map]
-          ((val k-f) (key k-f) kvm map-key oldval newval))))
+          ((val k-f) (key k-f) kvm mapkey oldval newval))))
     (let [kvm-key-watchers-atm (.-kvmap-key-watchers-atom kvm)]
-      (when-let [fns-map (get @kvm-key-watchers-atm map-key nil)]
+      (when-let [fns-map (get @kvm-key-watchers-atm mapkey nil)]
         (doseq [k-f fns-map]
-          ((val k-f) (key k-f) kvm map-key oldval newval))))
+          ((val k-f) (key k-f) kvm mapkey oldval newval))))
     kvm)
   (add-kvmap-watch 
-    ([kvm fn-key f]
-      (swap! (.-kvmap-watchers-atom kvm) assoc fn-key f)
+    ([kvm fnkey f]
+      (swap! (.-kvmap-watchers-atom kvm) assoc fnkey f)
       kvm)
-    ([kvm map-key fn-key f]
-      (swap! (.-kvmap-key-watchers-atom kvm) assoc-in [map-key fn-key] f)
+    ([kvm mapkey fnkey f]
+      (swap! (.-kvmap-key-watchers-atom kvm) assoc-in [mapkey fnkey] f)
       kvm))
   (remove-kvmap-watch
-    ([kvm map-key fn-key]
-      (if (= kvm map-key)
-        (swap! (.-kvmap-watchers-atom kvm) dissoc fn-key)
-        (let [fns-map (get-in @(.-kvmap-key-watchers-atom kvm) [map-key])
-              new-fns-map (dissoc fns-map fn-key)]
+    ([kvm mapkey fnkey]
+      (if (= kvm mapkey)
+        (swap! (.-kvmap-watchers-atom kvm) dissoc fnkey)
+        (let [fns-map (get-in @(.-kvmap-key-watchers-atom kvm) [mapkey])
+              new-fns-map (dissoc fns-map fnkey)]
           (if (empty? new-fns-map)
-            (swap! (.-kvmap-key-watchers-atom kvm) dissoc map-key)
-            (swap! (.-kvmap-key-watchers-atom kvm) assoc-in [map-key] new-fns-map))))
+            (swap! (.-kvmap-key-watchers-atom kvm) dissoc mapkey)
+            (swap! (.-kvmap-key-watchers-atom kvm) assoc-in [mapkey] new-fns-map))))
       kvm)
-    ([kvm map-key]
-      (if (= kvm map-key)
+    ([kvm mapkey]
+      (if (= kvm mapkey)
         (reset! (.-kvmap-watchers-atom kvm) {})
-        (swap! (.-kvmap-key-watchers-atom kvm) dissoc map-key))
+        (swap! (.-kvmap-key-watchers-atom kvm) dissoc mapkey))
       kvm)
     ([kvm]
       (reset! (.-kvmap-watchers-atom kvm) {})
@@ -211,60 +223,60 @@
   ;; ITransientCollection
 
   ;; ough... jumping thru hoops to fulfill the IWatchable protocol requirements
-  ;; the storage lookup key is not the same as the IWatchable's fn-key...
+  ;; the storage lookup key is not the same as the IWatchable's fnkey...
   ;; TODO: need to be able to add multiple watchers per key
   IWatchable
   (-notify-watches [ls oldval newval]
-    (let [map-key (:key oldval)]
-      (when-let [fns-map (get @ls-watchers map-key nil)]
+    (let [mapkey (:key oldval)]
+      (when-let [fns-map (get @ls-watchers mapkey nil)]
         (doseq [k-f fns-map]
-          ;; pass the map-key instead of the map-ref, 
+          ;; pass the mapkey instead of the map-ref, 
           ;; because the local storage is a well-known singleton
-          ;; and the map-key is the only useful "ref" to what changed
-          ((val k-f) (key k-f) map-key (:value oldval) (:value newval)))))
+          ;; and the mapkey is the only useful "ref" to what changed
+          ((val k-f) (key k-f) mapkey (:value oldval) (:value newval)))))
 ;;           ((val k-f) (key k-f) ls (:value oldval) (:value newval)))))
     ls)
-  (-add-watch [ls [map-key fn-key] f]
-    (swap! ls-watchers assoc-in [map-key fn-key] f))
-  (-remove-watch [ls [map-key fn-key]]
-    (let [fns-map (get-in @ls-watchers [map-key])
-          new-fns-map (dissoc fns-map fn-key)]
+  (-add-watch [ls [mapkey fnkey] f]
+    (swap! ls-watchers assoc-in [mapkey fnkey] f))
+  (-remove-watch [ls [mapkey fnkey]]
+    (let [fns-map (get-in @ls-watchers [mapkey])
+          new-fns-map (dissoc fns-map fnkey)]
       (if (empty? new-fns-map)
-        (swap! ls-watchers dissoc map-key)
-        (swap! ls-watchers assoc-in [map-key] new-fns-map))))
+        (swap! ls-watchers dissoc mapkey)
+        (swap! ls-watchers assoc-in [mapkey] new-fns-map))))
 
   
   IMutableKVMapWatchable
   
-  (notify-kvmap-watches [ls map-key oldval newval]
+  (notify-kvmap-watches [ls mapkey oldval newval]
     (when-let [fns-map @ls-kvmap-watchers-atom]
       (doseq [k-f fns-map]
-        ((val k-f) (key k-f) ls map-key oldval newval)))
-    (when-let [fns-map (get @ls-kvmap-key-watchers-atom map-key nil)]
+        ((val k-f) (key k-f) ls mapkey oldval newval)))
+    (when-let [fns-map (get @ls-kvmap-key-watchers-atom mapkey nil)]
       (doseq [k-f fns-map]
-        ((val k-f) (key k-f) ls map-key oldval newval)))
+        ((val k-f) (key k-f) ls mapkey oldval newval)))
     ls)
   (add-kvmap-watch 
-    ([ls fn-key f]
-      (swap! ls-kvmap-watchers-atom assoc fn-key f)
+    ([ls fnkey f]
+      (swap! ls-kvmap-watchers-atom assoc fnkey f)
       ls)
-    ([ls map-key fn-key f]
-      (swap! ls-kvmap-key-watchers-atom assoc-in [map-key fn-key] f)
+    ([ls mapkey fnkey f]
+      (swap! ls-kvmap-key-watchers-atom assoc-in [mapkey fnkey] f)
       ls))
   (remove-kvmap-watch
-    ([ls map-key fn-key]
-      (if (= ls map-key)
-        (swap! ls-kvmap-watchers-atom dissoc fn-key)
-        (let [fns-map (get-in @ls-kvmap-key-watchers-atom [map-key])
-              new-fns-map (dissoc fns-map fn-key)]
+    ([ls mapkey fnkey]
+      (if (= ls mapkey)
+        (swap! ls-kvmap-watchers-atom dissoc fnkey)
+        (let [fns-map (get-in @ls-kvmap-key-watchers-atom [mapkey])
+              new-fns-map (dissoc fns-map fnkey)]
           (if (empty? new-fns-map)
-            (swap! ls-kvmap-key-watchers-atom dissoc map-key)
-            (swap! ls-kvmap-key-watchers-atom assoc-in [map-key] new-fns-map))))
+            (swap! ls-kvmap-key-watchers-atom dissoc mapkey)
+            (swap! ls-kvmap-key-watchers-atom assoc-in [mapkey] new-fns-map))))
       ls)
-    ([ls map-key]
-      (if (= ls map-key)
+    ([ls mapkey]
+      (if (= ls mapkey)
         (reset! ls-kvmap-watchers-atom {})
-        (swap! ls-kvmap-key-watchers-atom dissoc map-key))
+        (swap! ls-kvmap-key-watchers-atom dissoc mapkey))
       ls)
     ([ls]
       (reset! ls-kvmap-watchers-atom {})
@@ -279,6 +291,12 @@
   (.clear ls)
   ls)
 
+
+;; The HTML5 Local Storage is a singleton, i.e. only one instance.
+;; Not sure why Closure's goog.storage.mechanism.HTML5LocalStorage
+;; constructor yields new variable instances for the same store (???)
+;; the following tries to give you always the same var such that
+;; you can actually compare them to be equal
 
 (def local-storage (goog.storage.mechanism.HTML5LocalStorage.))
 
@@ -307,21 +325,28 @@
 ;;   if (!e) { e = window.event; }
 ;; }
 
-(js/window.addEventListener 
-  "storage" 
-  (fn [e] 
-;;     (println "storage event")
-    (let [storage-area (.-storageArea e)
-          local-storage? (= storage-area js/localStorage)]
-      (when local-storage?
-        (let [ls (get-local-storage)
-              map-key (cljs.reader/read-string (.-key e))
-              oldValue (.-oldValue e)
-              old-value (if oldValue (cljs.reader/read-string (.-oldValue e)) no-value)
-              new-value (cljs.reader/read-string (.-newValue e))]
-      (println "\"storage\" event(map-key, oldValue, newValue, storageArea, local-storage?):" map-key old-value new-value storage-area local-storage?)
-      (notify-kvmap-watches ls map-key old-value new-value)))))
-  false)
+(defn register-local-storage-event-watcher 
+  "Register a 'storage' event handler that will notify the registered
+  local-storage IMutableKVMapWatchable's watchers.
+  The storage event will fire when the local storage is changed from
+  within other windows, and could be used to communicate state between
+  different windows served from the same domain."
+  []
+  (js/window.addEventListener 
+    "storage" 
+    (fn [e] 
+  ;;     (println "storage event")
+      (let [storage-area (.-storageArea e)
+            local-storage? (= storage-area js/localStorage)]
+        (when local-storage?
+          (let [ls (get-local-storage)
+                mapkey (cljs.reader/read-string (.-key e))
+                oldValue (.-oldValue e)
+                oldval (if oldValue (cljs.reader/read-string (.-oldValue e)) no-value)
+                newval (cljs.reader/read-string (.-newValue e))]
+;;         (println "\"storage\" event(mapkey, oldValue, newval, storageArea, local-storage?):" mapkey oldval newval storage-area local-storage?)
+        (notify-kvmap-watches ls mapkey oldval newval)))))
+    false))
 
 (js/window.addEventListener 
   "storage" 
@@ -329,3 +354,30 @@
     (println "storage event"))
   false)
 
+(defn sync-mutable-kvmaps
+  "Register watcher functions with the mutable key-value map 
+  src-map to update and keep in sync dest-map.
+  Single key-values can be sync'ed by specifying 
+  src-map-key and dest-map-key.
+  The whole src-map is sync'ed to dest-map by omitting any key info.
+  Returns the registered watcher-fn or nil if anything wrong.
+  The registered fn-key for the watcher-fn is the fn itself.
+  src-map and dest-map should satisfy IMutableKVMapWatchable."
+  ([src-map src-map-key dest-map dest-map-key]
+    (when (and (satisfies? IMutableKVMapWatchable src-map)
+               (satisfies? IMutableKVMapWatchable dest-map))
+      (let [f (fn [fnkey this mapkey oldval newval]
+                (if (= newval no-val)
+                  (dissoc! dest-map dest-map-key)
+                  (assoc! dest-map dest-map-key newval)))]
+        (add-kvmap-watch src-map src-map-key f f)
+        f)))
+  ([src-map dest-map]
+    (when (and (satisfies? IMutableKVMapWatchable src-map)
+               (satisfies? IMutableKVMapWatchable dest-map))
+      (let [f (fn [fnkey this mapkey oldval newval]
+                (if (= newval no-val)
+                  (dissoc! dest-map map-key)
+                  (assoc! dest-map map-key newval)))]
+        (add-kvmap-watch src-map f f)
+        f))))
